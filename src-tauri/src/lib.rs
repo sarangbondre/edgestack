@@ -18,7 +18,7 @@ pub fn run() {
         .setup(|app| {
             let app_handle = app.handle().clone();
 
-            // Init filesystem layout (~/.edgestack/)
+            // Init filesystem layout (~/edgestack/)
             utils::fs::ensure_app_dirs()?;
 
             // Init SQLite database

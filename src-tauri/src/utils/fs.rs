@@ -3,7 +3,7 @@ use std::fs;
 use std::path::PathBuf;
 
 pub fn app_dir() -> PathBuf {
-    dirs_next::home_dir().unwrap_or_default().join(".edgestack")
+    dirs_next::home_dir().unwrap_or_default().join("edgestack")
 }
 
 pub fn ensure_app_dirs() -> Result<()> {

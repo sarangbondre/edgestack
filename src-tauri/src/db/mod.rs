@@ -32,8 +32,7 @@ pub fn run_migrations(pool: &DbPool) -> Result<()> {
 }
 
 fn get_db_path() -> PathBuf {
-    let home = dirs_next::home_dir().unwrap_or_default();
-    home.join(".edgestack").join("edgestack.db")
+    crate::utils::fs::app_dir().join("edgestack.db")
 }
 
 const SCHEMA_SQL: &str = r#"

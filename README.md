@@ -42,6 +42,12 @@ npm run tauri build -- --target universal-apple-darwin
 ## Directory Structure
 
 All application state, local databases, and assets are stored in the user's home directory:
-- SQLite database: `~/.edgestack/edgestack.db`
-- Configuration: `~/.edgestack/config.toml`
-- Telemetry & pricing records: `~/.edgestack/bedrock_pricing.json`
+- **SQLite Database**: `~/edgestack/edgestack.db` (stores workflows, execution history, human-in-the-loop gate approvals, and collected telemetry records)
+- **Configuration**: `~/edgestack/config.toml` (stores general settings, resource allocations, notifications, and local model inference setup)
+- **Pricing Records**: `~/edgestack/bedrock_pricing.json` (defines local cost tier metrics for AWS Bedrock model comparison)
+- **Subdirectories**:
+  - `~/edgestack/vault/` (local vault storage objects)
+  - `~/edgestack/floci/` (workspace for the Floci emulator subprocess)
+  - `~/edgestack/workflows/` (workflow definitions and run history details)
+  - `~/edgestack/logs/` (application execution and diagnostic logs)
+  - `~/edgestack/bin/` (external helper binaries, including `floci.jar`)

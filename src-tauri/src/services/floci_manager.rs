@@ -41,7 +41,7 @@ pub async fn start_floci() -> Result<()> {
         return Err(anyhow!("floci.jar is missing at {:?}. Cannot start infrastructure emulator.", jar_path));
     }
 
-    // Launch subprocess: java -jar ~/.edgestack/bin/floci.jar --port 4568
+    // Launch subprocess: java -jar ~/edgestack/bin/floci.jar --port 4568
     let mut child = Command::new("java")
         .arg("-jar")
         .arg(&jar_path)
