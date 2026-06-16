@@ -1092,6 +1092,39 @@ export const invoke = async (cmd: string, args?: any): Promise<any> => {
         vram = 5.8;
       }
 
+      // Check if prompt is related to compliance/governance advisor
+      if (promptLower.includes("governance") || promptLower.includes("compliance") || promptLower.includes("policy")) {
+        return {
+          text: `I would be happy to help you with that. Maintaining data security and controlling external integrations is crucial for enterprise compliance.
+
+### Regulatory Reasoning & Rationale:
+* **GDPR Compliance (Article 32):** Restricting external HTTP connections ensures that personal data (PII) is never transmitted to unauthorized third parties without explicit user consent.
+* **SOC2 & HIPAA Security Controls:** Restricting outbound traffic prevents accidental data exfiltration and guarantees a secure audit trail of all data moving outside your local network.
+* **Operational Guardrails:** Implementing rate limits and token budgets protects your local host resources from infinite loops and unexpected third-party API billings.
+
+Here is a sample YAML configuration to enforce this policy:
+
+\`\`\`yaml
+# EdgeStack Governance Policy
+id: "policy-block-http"
+name: "Block External HTTP Calls"
+action_type: "http_request"
+effect: "block"
+enabled: true
+conditions:
+  url_allowlist:
+    - "api.stripe.com"
+    - "api.sendgrid.com"
+    - "hooks.slack.com"
+\`\`\`
+
+By deploying this policy, any unauthorized HTTP request made by your local agents will be intercepted and blocked, and the event is permanently logged in the secure local audit database. Let me know if you would like to adjust the conditions or if you have questions about specific compliance rules!`,
+          tokens_per_second: speed,
+          first_token_ms: latency,
+          memory_used_gb: vram
+        };
+      }
+
       // Check if prompt is from the Copilot requesting a workflow
       if (promptLower.includes("workflow") || promptLower.includes("scraper") || promptLower.includes("agent") || promptLower.includes("slack") || promptLower.includes("categorize") || promptLower.includes("fetch")) {
         // Return a workflow builder copilot reply containing GGUF/YAML markup
