@@ -1094,15 +1094,20 @@ export const invoke = async (cmd: string, args?: any): Promise<any> => {
 
       // Check if prompt is related to compliance/governance advisor
       if (promptLower.includes("governance") || promptLower.includes("compliance") || promptLower.includes("policy")) {
-        return {
-          text: `I would be happy to help you with that. Maintaining data security and controlling external integrations is crucial for enterprise compliance.
+        const parts = prompt.split("User:");
+        const lastPart = parts[parts.length - 1] || "";
+        const query = lastPart.split("Assistant:")[0].trim().toLowerCase();
 
-### Regulatory Reasoning & Rationale:
+        if (query.includes("http") || query.includes("block") || query.includes("request") || query.includes("domain") || query.includes("egress")) {
+          return {
+            text: `Maintaining outbound network controls is a critical security practice. Let's draft a policy to block unauthorized HTTP requests.
+
+### Regulatory Rationale:
 * **GDPR Compliance (Article 32):** Restricting external HTTP connections ensures that personal data (PII) is never transmitted to unauthorized third parties without explicit user consent.
-* **SOC2 & HIPAA Security Controls:** Restricting outbound traffic prevents accidental data exfiltration and guarantees a secure audit trail of all data moving outside your local network.
-* **Operational Guardrails:** Implementing rate limits and token budgets protects your local host resources from infinite loops and unexpected third-party API billings.
+* **SOC2 CC6.6 (Boundary Defense):** Outbound URL filtering blocks malicious traffic and unauthorized data transfers, preserving boundary integrity.
+* **HIPAA Security Rule:** Prohibiting outbound queries to unknown domains prevents accidental disclosure of protected health information (PHI).
 
-Here is a sample YAML configuration to enforce this policy:
+Here is the recommended YAML configuration:
 
 \`\`\`yaml
 # EdgeStack Governance Policy
@@ -1118,7 +1123,111 @@ conditions:
     - "hooks.slack.com"
 \`\`\`
 
-By deploying this policy, any unauthorized HTTP request made by your local agents will be intercepted and blocked, and the event is permanently logged in the secure local audit database. Let me know if you would like to adjust the conditions or if you have questions about specific compliance rules!`,
+By configuring this, any workflow step performing an outbound \`http_request\` to an unlisted host will trigger an automatic block, preserving compliance.`,
+            tokens_per_second: speed,
+            first_token_ms: latency,
+            memory_used_gb: vram
+          };
+        }
+
+        if (query.includes("token") || query.includes("budget") || query.includes("cost") || query.includes("limit")) {
+          return {
+            text: `Enforcing token budgets protects your systems from operational and financial risks.
+
+### Regulatory Rationale:
+* **SOC2 CC9.1 (Operational Controls):** Runaway AI agents can perform rapid loops, exhausting API keys and causing denial of service. Token caps prevent resource depletion.
+* **Financial Governance:** Capping daily token usage guarantees cost predictability, ensuring agent execution stays within departmental budgets.
+
+Here is the recommended YAML configuration:
+
+\`\`\`yaml
+# EdgeStack Governance Policy
+id: "policy-token-budget"
+name: "AI Token Budget (50K/day)"
+action_type: "ask_ai"
+effect: "block"
+enabled: true
+conditions:
+  max_tokens_per_day: 50000
+\`\`\`
+
+This policy will block any local LLM inference steps once the workflow's cumulative token usage for the day exceeds 50,000 tokens.`,
+            tokens_per_second: speed,
+            first_token_ms: latency,
+            memory_used_gb: vram
+          };
+        }
+
+        if (query.includes("gdpr") || query.includes("privacy") || query.includes("pii") || query.includes("local")) {
+          return {
+            text: `Running AI workflows locally is one of the most powerful strategies for regulatory compliance.
+
+### Regulatory Rationale:
+* **GDPR Article 28 (Data Processors):** Traditional cloud AI sends data to external providers, creating a data processor relationship. With local models, data never leaves your hardware, eliminating third-party processor liabilities.
+* **GDPR Article 32 (Security of Processing):** Processing personal data locally mitigates risks of data intercept during transit and satisfies strict data minimization principles.
+
+To further protect privacy, you can also enable a PII (Personally Identifiable Information) output filter:
+
+\`\`\`yaml
+# EdgeStack Governance Policy
+id: "policy-pii-filter"
+name: "PII Output Filter"
+action_type: "ask_ai"
+effect: "warn"
+enabled: true
+conditions:
+  pii_filter_output: true
+\`\`\`
+
+This policy inspects local LLM responses and strips out emails, phone numbers, and credit cards, warning the administrator of potential data leaks.`,
+            tokens_per_second: speed,
+            first_token_ms: latency,
+            memory_used_gb: vram
+          };
+        }
+
+        if (query.includes("audit") || query.includes("browse") || query.includes("web") || query.includes("log")) {
+          return {
+            text: `Auditing agent actions is essential for maintaining trust and verifying compliance status.
+
+### Regulatory Rationale:
+* **SOC2 CC6.1 & CC6.3 (Audit Trail & Logging):** You must maintain a log of security-relevant events. EdgeStack writes every policy check to a local SQLite audit table, creating a tamper-proof record of what was allowed or blocked.
+* **HIPAA § 164.312(b) (Audit Controls):** Enforces mechanisms to record and examine activity in systems containing PHI. 
+
+Here is a policy to limit web browsing actions to prevent abuse, while logging audit events:
+
+\`\`\`yaml
+# EdgeStack Governance Policy
+id: "policy-rate-limit-browse"
+name: "Rate Limit Web Browsing (10/hr)"
+action_type: "browse_web"
+effect: "warn"
+enabled: true
+conditions:
+  max_calls_per_hour: 10
+\`\`\`
+
+When this rule is enabled, all browsing operations are checked, and anything exceeding the rate will trigger an audit warning.`,
+            tokens_per_second: speed,
+            first_token_ms: latency,
+            memory_used_gb: vram
+          };
+        }
+
+        // General fallback compliance advice
+        return {
+          text: `Hello! I would be happy to advise you on your EdgeStack policies. 
+
+### Core AI Governance Framework:
+1. **Local Isolation:** Keeping inference and data local satisfies **GDPR** and **HIPAA** compliance by avoiding third-party data processing.
+2. **Real-time Interception:** The policy engine checks agent actions (like HTTP requests or storage writing) and issues blocks or warnings before execution.
+3. **Traceability:** All actions write to a local audit log so you can review decisions at any time.
+
+How can I help you? You can ask me to:
+- *Draft an HTTP blocklist policy*
+- *Configure token limits for cost control*
+- *Explain GDPR compliance of offline models*
+- *Create web browsing rate limits*`,
           tokens_per_second: speed,
           first_token_ms: latency,
           memory_used_gb: vram
