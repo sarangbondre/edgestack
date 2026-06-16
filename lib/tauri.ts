@@ -1094,9 +1094,11 @@ export const invoke = async (cmd: string, args?: any): Promise<any> => {
 
       // Check if prompt is related to compliance/governance advisor
       if (promptLower.includes("governance") || promptLower.includes("compliance") || promptLower.includes("policy")) {
-        const parts = prompt.split("User:");
+        const cleanPrompt = prompt.split("### RESPONSE INSTRUCTIONS:")[0] || prompt;
+        const historyPart = cleanPrompt.split("### CONVERSATION HISTORY")[1] || cleanPrompt;
+        const parts = historyPart.split("User:");
         const lastPart = parts[parts.length - 1] || "";
-        const query = lastPart.split("Assistant:")[0].trim().toLowerCase();
+        const query = lastPart.trim().toLowerCase();
 
         if (query.includes("http") || query.includes("block") || query.includes("request") || query.includes("domain") || query.includes("egress")) {
           return {
