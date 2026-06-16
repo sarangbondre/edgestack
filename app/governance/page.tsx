@@ -536,7 +536,19 @@ Answer all compliance queries professionally and cordially. Provide clear, suppo
       const chatHistory = messages.map((m) => ({ role: m.role, content: m.content }));
       chatHistory.push({ role: "user", content: userMsg.content });
 
-      const fullPrompt = `${systemPrompt}\n\nChat History:\n${chatHistory.map(h => `${h.role === "user" ? "User" : "Assistant"}: ${h.content}`).join("\n")}\nAssistant:`;
+      const fullPrompt = `### SYSTEM INSTRUCTIONS (MANDATORY COMPLIANCE ROLE)
+${systemPrompt}
+
+### CONVERSATION HISTORY
+${chatHistory.map(h => `${h.role === "user" ? "User" : "Assistant"}: ${h.content}`).join("\n")}
+
+### RESPONSE INSTRUCTIONS:
+- Act strictly as the EdgeStack Governance & Compliance Officer.
+- Explain the security risk, the technical rationale, and map it directly to GDPR, HIPAA, SOC2, or local privacy laws.
+- Keep the tone warm, friendly, clear, and easy for non-technical humans.
+- Provide a YAML example if appropriate.
+
+Assistant:`;
 
       const res = await invoke<any>("generate_chat_response", {
         model: selectedModelTag,
