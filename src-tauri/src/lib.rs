@@ -24,10 +24,42 @@ pub fn run() {
             // Init SQLite database
             let pool = db::init_pool()?;
             db::run_migrations(&pool)?;
+
+            // Audit chain integrity check on startup
+            match db::audit_chain::verify_audit_integrity(&pool) {
+                Ok(true) => println!("Audit log integrity verified successfully."),
+                Ok(false) => {
+                    eprintln!("AUDIT_INTEGRITY_VIOLATION: Audit chain has been tampered with!");
+                    panic!("AUDIT_INTEGRITY_VIOLATION: Tampering detected in system audit logs. Halting execution.");
+                }
+                Err(e) => {
+                    eprintln!("Failed to verify audit log integrity: {}", e);
+                }
+            }
+
+            // Verify policy signatures in policies/ folder
+            let policies_dir = utils::fs::app_dir().join("policies");
+            if let Ok(entries) = std::fs::read_dir(&policies_dir) {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let path = entry.path();
+                    if path.extension().map_or(false, |ext| ext == "yaml" || ext == "yml") {
+                        if let Err(e) = services::policy_signature::load_and_verify_policy_file(&pool, &path) {
+                            eprintln!("POLICY_TAMPER: Policy verification failed for {:?}: {}", path, e);
+                            panic!("POLICY_TAMPER: Failed to verify integrity of policy files: {}", e);
+                        }
+                    }
+                }
+            }
+
             let pool_arc = std::sync::Arc::new(pool);
 
             // Store pool in app state
             app.manage(pool_arc.clone());
+
+            // Init centralized SQLite writer
+            let writer = db::writer::DbWriter::new(pool_arc.clone());
+            let writer_arc = std::sync::Arc::new(writer);
+            app.manage(writer_arc.clone());
 
             // Copy default assets if first launch
             utils::fs::copy_default_assets()?;
@@ -82,6 +114,7 @@ pub fn run() {
             commands::workflow::list_runs,
             commands::workflow::list_all_runs,
             commands::workflow::get_run,
+            commands::workflow::validate_workflow_dag_cmd,
             // Failure & Circuit Breaker
             commands::failure::record_human_action,
             commands::failure::get_failure_review,
@@ -126,6 +159,9 @@ pub fn run() {
             commands::governance::list_audit_log,
             commands::governance::get_compliance_summary,
             commands::governance::export_policies_yaml,
+            commands::governance::export_audit_chain_json,
+            commands::governance::verify_audit_chain_integrity_cmd,
+            commands::governance::explain_retrieval_cmd,
         ])
         .run(tauri::generate_context!())
         .expect("error while running EdgeStack");

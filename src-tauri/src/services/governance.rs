@@ -273,16 +273,173 @@ fn match_effect(effect: &str, reason: String, policy_id: &str) -> PolicyDecision
     }
 }
 
-// ─── PII Filter ────────────────────────────────────────────────────────────────
+// ─── PII Firewall & Security ───────────────────────────────────────────────────
+
+pub struct PromptFirewallResult {
+    pub scrubbed_prompt: String,
+    pub pii_count: usize,
+    pub blocked: bool,
+    pub block_reason: Option<String>,
+}
+
+pub fn inspect_and_scrub_prompt(
+    pool: &DbPool,
+    workflow_id: &str,
+    run_id: &str,
+    step_name: &str,
+    prompt: &str,
+) -> PromptFirewallResult {
+    let mut pii_count = 0;
+    
+    // 1. Detect SSN
+    let ssn_re = regex::Regex::new(r"\b\d{3}-\d{2}-\d{4}\b").unwrap();
+    pii_count += ssn_re.find_iter(prompt).count();
+    let prompt = ssn_re.replace_all(prompt, "[SSN_REDACTED]").to_string();
+
+    // 2. Detect Emails
+    let email_re = regex::Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap();
+    pii_count += email_re.find_iter(&prompt).count();
+    let prompt = email_re.replace_all(&prompt, "[EMAIL_REDACTED]").to_string();
+
+    // 3. Detect Phone numbers
+    let phone_re = regex::Regex::new(r"(\+?[\d\s\-().]{7,15}\d)").unwrap();
+    pii_count += phone_re.find_iter(&prompt).count();
+    let prompt = phone_re.replace_all(&prompt, "[PHONE_REDACTED]").to_string();
+
+    // 4. Detect Credit Cards
+    let cc_re = regex::Regex::new(r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b").unwrap();
+    pii_count += cc_re.find_iter(&prompt).count();
+    let prompt = cc_re.replace_all(&prompt, "[CC_REDACTED]").to_string();
+
+    // 5. Detect potential API Keys
+    let api_key_re = regex::Regex::new(r"\b(sk-[a-zA-Z0-9]{20,40}|gapi-[a-zA-Z0-9]{20,40})\b").unwrap();
+    pii_count += api_key_re.find_iter(&prompt).count();
+    let prompt = api_key_re.replace_all(&prompt, "[API_KEY_REDACTED]").to_string();
+
+    // 6. Stage 1 Injection & Jailbreak detection
+    let injection_re = regex::Regex::new(r"(?i)(ignore previous instructions|system override|jailbreak|you are now mode|do anything now|dan mode|developer mode)").unwrap();
+    let injection_detected = injection_re.is_match(&prompt);
+
+    let blocked = pii_count > 0 || injection_detected;
+    let block_reason = if injection_detected {
+        Some("Prompt blocked: potential prompt injection / jailbreak payload detected.".to_string())
+    } else if pii_count > 0 {
+        Some(format!("Prompt blocked: PII prompt firewall block ({} matches found)", pii_count))
+    } else {
+        None
+    };
+
+    // Log to SQLite Audit database
+    if let Ok(conn) = pool.get() {
+        let audit_id = crate::utils::id::new_id();
+        let now = Utc::now().to_rfc3339();
+        let decision = if blocked { "block" } else { "allow" };
+        let execution_blocked_int = if blocked { 1 } else { 0 };
+
+        let _ = conn.execute(
+            "INSERT INTO audit_log (id, timestamp, workflow_id, run_id, step_name, action_type, decision, reason, pii_detected_count, execution_blocked)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'ask_ai', ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                audit_id, now, workflow_id, run_id, step_name,
+                decision, block_reason.clone().unwrap_or_else(|| "Passed input checks".to_string()), pii_count as i64, execution_blocked_int
+            ],
+        );
+    }
+
+    PromptFirewallResult {
+        scrubbed_prompt: prompt,
+        pii_count,
+        blocked,
+        block_reason,
+    }
+}
+
+// Stage 2 — Retrieval Policy Engine (HIPAA / Residency Checks)
+pub fn inspect_retrieval_context(
+    pool: &DbPool,
+    workflow_id: &str,
+    run_id: &str,
+    step_name: &str,
+    context: &str,
+) -> String {
+    // Basic HIPAA scanning: Redact Medical Record Numbers (MRN) or PHI markers
+    let phi_re = regex::Regex::new(r"(?i)\b(mrn-\d{5,10}|medical record|patient name:|phi:)\b").unwrap();
+    let has_phi = phi_re.is_match(context);
+    
+    let result_text = if has_phi {
+        phi_re.replace_all(context, "[PHI_REDACTED_BY_GOVERNANCE]").to_string()
+    } else {
+        context.to_string()
+    };
+
+    if has_phi {
+        if let Ok(conn) = pool.get() {
+            let audit_id = crate::utils::id::new_id();
+            let now = Utc::now().to_rfc3339();
+            let _ = conn.execute(
+                "INSERT INTO audit_log (id, timestamp, workflow_id, run_id, step_name, action_type, decision, reason, pii_detected_count, execution_blocked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'retrieval_context', 'warn', 'PHI/HIPAA data scrubbed from context', 1, 0)",
+                rusqlite::params![audit_id, now, workflow_id, run_id, step_name],
+            );
+        }
+    }
+
+    result_text
+}
+
+// Stage 3 — Output Policy Engine (Safety and Leak Protection)
+pub fn inspect_model_output(
+    pool: &DbPool,
+    workflow_id: &str,
+    run_id: &str,
+    step_name: &str,
+    output: &str,
+) -> Result<String, String> {
+    // 1. Detect if model leaks secrets (e.g. standard private key headers)
+    let secret_re = regex::Regex::new(r"(?i)(-----BEGIN PRIVATE KEY-----|client_secret|client_id|database_url)").unwrap();
+    let leak_detected = secret_re.is_match(output);
+
+    if leak_detected {
+        if let Ok(conn) = pool.get() {
+            let audit_id = crate::utils::id::new_id();
+            let now = Utc::now().to_rfc3339();
+            let _ = conn.execute(
+                "INSERT INTO audit_log (id, timestamp, workflow_id, run_id, step_name, action_type, decision, reason, pii_detected_count, execution_blocked)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'ask_ai_output', 'block', 'Blocked response: Model output contained private credentials', 0, 1)",
+                rusqlite::params![audit_id, now, workflow_id, run_id, step_name],
+            );
+        }
+        return Err("Execution Blocked: Model response generated sensitive credential tokens or API keys.".to_string());
+    }
+
+    Ok(output.to_string())
+}
 
 pub fn filter_pii(text: &str) -> String {
-    // Redact emails
     let email_re = regex::Regex::new(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}").unwrap();
     let result = email_re.replace_all(text, "[EMAIL_REDACTED]");
-    // Redact phone numbers (basic patterns)
     let phone_re = regex::Regex::new(r"(\+?[\d\s\-().]{7,15}\d)").unwrap();
     let result = phone_re.replace_all(&result, "[PHONE_REDACTED]");
-    // Redact credit card-like patterns
     let cc_re = regex::Regex::new(r"\b\d{4}[\s\-]?\d{4}[\s\-]?\d{4}[\s\-]?\d{4}\b").unwrap();
     cc_re.replace_all(&result, "[CC_REDACTED]").to_string()
+}
+
+// ─── Keyring Secure Storage Integration ──────────────────────────────────────────
+
+pub fn store_secure_credential(service: &str, username: &str, secret: &str) -> Result<()> {
+    let entry = keyring::Entry::new(service, username)?;
+    entry.set_password(secret)?;
+    Ok(())
+}
+
+pub fn get_secure_credential(service: &str, username: &str) -> Result<String> {
+    let entry = keyring::Entry::new(service, username)?;
+    let secret = entry.get_password()?;
+    Ok(secret)
+}
+
+pub fn delete_secure_credential(service: &str, username: &str) -> Result<()> {
+    let entry = keyring::Entry::new(service, username)?;
+    entry.delete_password()?;
+    Ok(())
 }

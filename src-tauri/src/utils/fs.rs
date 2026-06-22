@@ -8,7 +8,7 @@ pub fn app_dir() -> PathBuf {
 
 pub fn ensure_app_dirs() -> Result<()> {
     let base = app_dir();
-    for subdir in &["vault", "floci", "workflows/definitions", "workflows/runs", "logs", "bin"] {
+    for subdir in &["vault", "floci", "workflows/definitions", "workflows/runs", "logs", "bin", "policies"] {
         fs::create_dir_all(base.join(subdir))?;
     }
     Ok(())

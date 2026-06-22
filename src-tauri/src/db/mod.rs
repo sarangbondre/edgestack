@@ -6,6 +6,8 @@ use std::path::PathBuf;
 pub type DbPool = Pool<SqliteConnectionManager>;
 
 pub mod repositories;
+pub mod writer;
+pub mod audit_chain;
 
 pub fn init_pool() -> Result<DbPool> {
     let db_path = get_db_path();
@@ -30,24 +32,6 @@ fn get_db_path() -> PathBuf {
 }
 
 const SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS hardware_profile (
-    key TEXT PRIMARY KEY,
-    value TEXT NOT NULL,
-    updated_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS benchmarks (
-    id TEXT PRIMARY KEY,
-    model_name TEXT NOT NULL,
-    model_size_gb REAL,
-    tokens_per_second REAL,
-    first_token_ms INTEGER,
-    memory_used_gb REAL,
-    cpu_pct REAL,
-    gpu_pct REAL,
-    run_at TEXT NOT NULL
-);
-
 CREATE TABLE IF NOT EXISTS workflows (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -55,6 +39,8 @@ CREATE TABLE IF NOT EXISTS workflows (
     definition_yaml TEXT NOT NULL,
     enabled INTEGER DEFAULT 1,
     circuit_breaker_json TEXT,
+    local_model_path TEXT,
+    huggingface_repo_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -95,7 +81,7 @@ CREATE TABLE IF NOT EXISTS step_executions (
 
 CREATE TABLE IF NOT EXISTS circuit_breaker_state (
     workflow_id TEXT PRIMARY KEY,
-    state TEXT NOT NULL DEFAULT 'CLOSED',
+    state TEXT NOT NULL DEFAULT 'CLOSED' CHECK(state IN ('CLOSED', 'OPEN', 'HALF-OPEN')),
     consecutive_failures INTEGER DEFAULT 0,
     last_failure_at TEXT,
     next_retry_at TEXT,
@@ -196,6 +182,7 @@ CREATE TABLE IF NOT EXISTS governance_policies (
     action_type TEXT NOT NULL,  -- 'ask_ai' | 'browse_web' | 'http_request' | 'save_to_vault' | 'write_to_s3' | '*'
     effect TEXT NOT NULL,       -- 'block' | 'warn' | 'audit'
     conditions_json TEXT NOT NULL DEFAULT '{}',
+    version INTEGER DEFAULT 1,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -213,10 +200,40 @@ CREATE TABLE IF NOT EXISTS audit_log (
     reason TEXT,
     context_url TEXT,
     tokens_requested INTEGER,
+    pii_detected_count INTEGER DEFAULT 0,
+    execution_blocked INTEGER DEFAULT 0,
     FOREIGN KEY (workflow_id) REFERENCES workflows(id)
 );
 
+CREATE TABLE IF NOT EXISTS tamper_evident_audit_log (
+    event_id TEXT PRIMARY KEY,
+    timestamp INTEGER NOT NULL,
+    event_type TEXT NOT NULL,
+    actor TEXT NOT NULL,
+    resource TEXT NOT NULL,
+    action TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    metadata TEXT NOT NULL,
+    previous_hash TEXT NOT NULL,
+    event_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS model_trust_registry (
+    model_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    publisher TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    sha256_hash TEXT NOT NULL,
+    license TEXT NOT NULL,
+    trust_level TEXT NOT NULL CHECK(trust_level IN ('UNTRUSTED', 'COMMUNITY', 'VERIFIED', 'ENTERPRISE_APPROVED')),
+    approved_by TEXT,
+    approved_at TEXT,
+    last_verified_at TEXT NOT NULL,
+    is_active INTEGER DEFAULT 1
+);
+
 -- Indexes
+CREATE INDEX IF NOT EXISTS idx_tamper_evident_audit_log_timestamp ON tamper_evident_audit_log(timestamp);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_workflow_id ON workflow_runs(workflow_id);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
 CREATE INDEX IF NOT EXISTS idx_step_executions_run_id ON step_executions(run_id);
@@ -231,6 +248,18 @@ CREATE INDEX IF NOT EXISTS idx_audit_log_decision ON audit_log(decision);
 
 pub fn run_migrations(pool: &DbPool) -> Result<()> {
     let conn = pool.get()?;
+    
+    // Add columns dynamically to workflows table if they don't exist
+    let _ = conn.execute("ALTER TABLE workflows ADD COLUMN local_model_path TEXT", []);
+    let _ = conn.execute("ALTER TABLE workflows ADD COLUMN huggingface_repo_id TEXT", []);
+
+    // Add columns dynamically to audit_log table if they don't exist
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN pii_detected_count INTEGER DEFAULT 0", []);
+    let _ = conn.execute("ALTER TABLE audit_log ADD COLUMN execution_blocked INTEGER DEFAULT 0", []);
+
+    // Add version column to governance_policies table if it doesn't exist
+    let _ = conn.execute("ALTER TABLE governance_policies ADD COLUMN version INTEGER DEFAULT 1", []);
+
     conn.execute_batch(SCHEMA_SQL)?;
     seed_db(&conn)?;
     Ok(())

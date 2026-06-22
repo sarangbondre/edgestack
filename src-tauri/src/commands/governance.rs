@@ -241,3 +241,41 @@ pub async fn export_policies_yaml(pool: State<'_, Arc<DbPool>>) -> Result<String
     let yaml = serde_yaml::to_string(&policies).unwrap_or_else(|_| "{}".to_string());
     Ok(format!("# EdgeStack Governance Policies\n# Exported: {}\n\n{}", Utc::now().to_rfc3339(), yaml))
 }
+
+#[tauri::command]
+pub async fn export_audit_chain_json(pool: State<'_, Arc<DbPool>>) -> Result<String, String> {
+    let conn = pool.get().map_err(|e| e.to_string())?;
+    let mut stmt = conn.prepare(
+        "SELECT event_id, timestamp, event_type, actor, resource, action, outcome, metadata, previous_hash, event_hash \
+         FROM tamper_evident_audit_log ORDER BY timestamp ASC"
+    ).map_err(|e| e.to_string())?;
+
+    let entries: Vec<Value> = stmt.query_map([], |row| {
+        Ok(serde_json::json!({
+            "event_id": row.get::<_, String>(0)?,
+            "timestamp": row.get::<_, i64>(1)?,
+            "event_type": row.get::<_, String>(2)?,
+            "actor": row.get::<_, String>(3)?,
+            "resource": row.get::<_, String>(4)?,
+            "action": row.get::<_, String>(5)?,
+            "outcome": row.get::<_, String>(6)?,
+            "metadata": serde_json::from_str::<Value>(&row.get::<_, String>(7)?).unwrap_or_default(),
+            "previous_hash": row.get::<_, String>(8)?,
+            "event_hash": row.get::<_, String>(9)?,
+        }))
+    }).map_err(|e| e.to_string())?
+    .filter_map(|r| r.ok())
+    .collect();
+
+    serde_json::to_string_pretty(&entries).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn verify_audit_chain_integrity_cmd(pool: State<'_, Arc<DbPool>>) -> Result<bool, String> {
+    crate::db::audit_chain::verify_audit_integrity(&pool).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn explain_retrieval_cmd(query: String) -> Result<serde_json::Value, String> {
+    Ok(crate::services::retrieval_planner::explain_retrieval(&query))
+}

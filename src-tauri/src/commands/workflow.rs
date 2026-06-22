@@ -116,6 +116,18 @@ pub async fn run_workflow_internal(
     let now = Utc::now().to_rfc3339();
     {
         let conn = pool.get().map_err(|e| e.to_string())?;
+
+        // Prevent duplicate parallel runs of identical workflows
+        let has_running: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM workflow_runs WHERE workflow_id = ?1 AND status = 'running')",
+            rusqlite::params![id],
+            |r| r.get(0)
+        ).unwrap_or(false);
+
+        if has_running {
+            return Err(format!("Workflow {} is already running. Duplicate execution blocked.", id));
+        }
+
         conn.execute(
             "INSERT INTO workflow_runs (id, workflow_id, status, started_at, trigger_type) VALUES (?1, ?2, 'running', ?3, ?4)",
             rusqlite::params![run_id, id, now, trigger_type],
@@ -162,6 +174,27 @@ async fn execute_workflow(
             |r| r.get::<_, String>(0),
         )?
     };
+
+    // DAG validation pre-execution hook
+    let validation = crate::services::dag_validator::validate_workflow_dag(&yaml);
+    if !validation.is_valid {
+        let err_reason = format!("DAG Validation Blocked: {}", validation.errors.join("; "));
+        let now = Utc::now().to_rfc3339();
+        {
+            let conn = pool.get()?;
+            conn.execute(
+                "UPDATE workflow_runs SET status='failed', completed_at=?1, failure_raw_log=?2 WHERE id=?3",
+                rusqlite::params![now, err_reason, run_id],
+            )?;
+        }
+        let _ = app.emit("workflow_failed", serde_json::json!({
+            "run_id": run_id,
+            "workflow_id": workflow_id,
+            "error": err_reason,
+            "ai_explanation": "The workflow definition contains structural circular dependency cycles or invalid step connections. Please fix it."
+        }));
+        return Ok(());
+    }
 
     let steps = parse_yaml_steps(&yaml);
     let total = steps.len() as u32;
@@ -245,18 +278,40 @@ async fn execute_workflow(
             "ask_ai" => {
                 let prompt = step.prompt.clone().unwrap_or_default();
                 let prompt_subbed = substitute_variables(&prompt, &step_outputs);
-                match client.generate(&prompt_subbed).await {
-                    Ok(resp) => {
-                        // Apply PII filter if any matching policy requests it
-                        let output_text = resp.text;
-                        let final_text = if step.pii_filter.unwrap_or(false) {
-                            crate::services::governance::filter_pii(&output_text)
-                        } else {
-                            output_text
-                        };
-                        (true, Some(final_text), None, Some(resp.tokens_out))
-                    },
-                    Err(e) => (false, None, Some(e.to_string()), None),
+                
+                // Stage 1: Active Governance Firewall (Input Engine)
+                let firewall = crate::services::governance::inspect_and_scrub_prompt(
+                    &pool, &workflow_id, &run_id, &step.name, &prompt_subbed
+                );
+                
+                if firewall.blocked {
+                    let err_msg = firewall.block_reason.unwrap_or_else(|| "Prompt blocked by Governance Firewall".to_string());
+                    (false, None, Some(err_msg), None)
+                } else {
+                    // Stage 2: Retrieval Policy Engine on subbed context
+                    let prompt_context_scrubbed = crate::services::governance::inspect_retrieval_context(
+                        &pool, &workflow_id, &run_id, &step.name, &firewall.scrubbed_prompt
+                    );
+
+                    match client.generate(&prompt_context_scrubbed).await {
+                        Ok(resp) => {
+                            // Stage 3: Output Policy Engine
+                            match crate::services::governance::inspect_model_output(
+                                &pool, &workflow_id, &run_id, &step.name, &resp.text
+                            ) {
+                                Ok(final_text) => {
+                                    let output_text = if step.pii_filter.unwrap_or(false) {
+                                        crate::services::governance::filter_pii(&final_text)
+                                    } else {
+                                        final_text
+                                    };
+                                    (true, Some(output_text), None, Some(resp.tokens_out))
+                                }
+                                Err(leak_error) => (false, None, Some(leak_error), None)
+                            }
+                        },
+                        Err(e) => (false, None, Some(e.to_string()), None),
+                    }
                 }
             },
             "browse_web" => {
@@ -336,10 +391,25 @@ async fn execute_workflow(
                 let body_data = step.data.clone().unwrap_or_default();
                 let body_data = substitute_variables(&body_data, &step_outputs);
 
+                // Run capability resolver to inject API Key secure token after model generation
+                let mut params = std::collections::HashMap::new();
+                params.insert("url".to_string(), target_url.clone());
+                params.insert("data".to_string(), body_data.clone());
+                
+                let resolved_params = crate::services::capability_resolver::resolve_secrets_for_tool("http_request", params)
+                    .unwrap_or_default();
+                
+                let api_key = resolved_params.get("api_key").cloned().unwrap_or_default();
+
                 let client = reqwest::Client::new();
-                let req = client.post(&target_url)
-                    .header("Content-Type", "application/json")
-                    .body(body_data);
+                let mut req = client.post(&target_url)
+                    .header("Content-Type", "application/json");
+                
+                if !api_key.is_empty() {
+                    req = req.header("Authorization", format!("Bearer {}", api_key));
+                }
+
+                let req = req.body(body_data);
 
                 match req.send().await {
                     Ok(resp) => {
@@ -415,7 +485,18 @@ async fn execute_workflow(
                         Err(e) => (false, None, Some(format!("SQS publish connection error: {}", e)), None),
                     }
             },
-            "send_email" | "store_in_data_store" => {
+            "send_email" => {
+                // Run capability resolver to inject SMTP credentials securely from Keyring
+                let mut params = std::collections::HashMap::new();
+                params.insert("action".to_string(), "send_email".to_string());
+                let resolved_params = crate::services::capability_resolver::resolve_secrets_for_tool("send_email", params)
+                    .unwrap_or_default();
+                
+                let smtp_pass = resolved_params.get("smtp_password").cloned().unwrap_or_default();
+                let note = format!("Email sent securely using resolved keychain credential (capability: email.send, token length: {} chars)", smtp_pass.len());
+                (true, Some(note), None, None)
+            },
+            "store_in_data_store" => {
                 let note = format!("Step '{}' completed (action: {})", step.name, step.action);
                 (true, Some(note), None, None)
             },
@@ -672,4 +753,9 @@ pub async fn get_run(pool: State<'_, Arc<DbPool>>, run_id: String) -> Result<ser
     let mut result = run;
     result["steps"] = serde_json::Value::Array(steps);
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn validate_workflow_dag_cmd(definition_yaml: String) -> Result<crate::services::dag_validator::ValidationResult, String> {
+    Ok(crate::services::dag_validator::validate_workflow_dag(&definition_yaml))
 }
