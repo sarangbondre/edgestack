@@ -42,7 +42,7 @@ export const Layout: React.FC<LayoutProps> = ({ title, children }) => {
       <div className="flex h-screen w-screen items-center justify-center bg-white dark:bg-gray-950">
         <div className="flex flex-col items-center gap-4">
           <Spinner size="lg" />
-          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Loading EdgeStack...</p>
+          <p className="text-sm font-medium text-gray-500 dark:text-gray-400">Loading PreceptaAI...</p>
         </div>
       </div>
     );

@@ -16,7 +16,7 @@ export const WelcomeStep: React.FC<WelcomeStepProps> = ({ onNext }) => {
           <Workflow className="h-16 w-16" />
         </div>
       </div>
-      <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Welcome to EdgeStack</h2>
+      <h2 className="text-2xl font-bold text-gray-900 dark:text-white mb-2">Welcome to PreceptaAI</h2>
       <p className="text-sm text-gray-500 dark:text-gray-400 mb-8 max-w-sm mx-auto">
         Your private, local-first AI business automation hub. Run workflows offline, securely, and with zero API costs.
       </p>
